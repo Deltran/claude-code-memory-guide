@@ -117,9 +117,9 @@ Daily files like `~/.claude/logs/2026-02-16.md`:
 
 **08:49** — Hey, I didn't get my morning briefing
 
-**10:18** — I think so -- honestly trusting you on this call.
+**10:18** — What are the trade-offs in going with MySQL over our current storage
 
-**10:48** — Find my open dorf to-do items and lets spin up processes...
+**10:48** — Find my open project to-do items and lets spin up processes...
 ```
 
 These accumulate automatically. No action required after setup.
@@ -224,10 +224,10 @@ Every time Claude starts, it immediately sees your recent work history. No manua
 
 ```
 ~/.claude/sessions/
-  dorf/
+  my-app/
     abc123-session-id.md     # Session A's state
     def456-session-id.md     # Session B's state
-  clip-editor/
+  api-server/
     ghi789-session-id.md     # Different project, isolated
 ```
 
@@ -502,16 +502,16 @@ The memory file lives at `~/.claude/projects/{project-path}/memory/MEMORY.md`. C
 For global memory (loaded in all sessions from your home directory):
 
 ```
-~/.claude/projects/-home-deltran/memory/MEMORY.md
+~/.claude/projects/-home-youruser/memory/MEMORY.md
 ```
 
 For project-specific memory:
 
 ```
-~/.claude/projects/-home-deltran-code-dorf/memory/MEMORY.md
+~/.claude/projects/-home-youruser-code-my-app/memory/MEMORY.md
 ```
 
-> **Note:** The path uses dashes instead of slashes. `~/code/dorf` becomes `-home-deltran-code-dorf`.
+> **Note:** The path uses dashes instead of slashes. `~/code/my-app` becomes `-home-youruser-code-my-app`.
 
 ### What To Store
 
@@ -519,17 +519,17 @@ For project-specific memory:
 # Memory
 
 ## Environment
-- **Platform**: WSL2/Ubuntu on Windows
-- **ImageMagick**: v6 (use `convert`, not `magick`)
+- **Platform**: Ubuntu 24.04
+- **Node**: v22, managed by asdf
 
 ## User Preferences
-- User keeps sudo access to themselves — no sudo from Claude
-- User prefers direct action over excessive planning
+- Prefers direct action over excessive planning
+- Always use pnpm, never npm
 
 ## Project Notes
-- Hero data files live in src/data/heroes/{rarity}star/
+- API routes live in src/routes/api/
 - Tests use vitest, run with `npx vitest run`
-- Battle system entry point: src/stores/battle/
+- Database migrations: src/db/migrations/
 ```
 
 ### What NOT To Store
@@ -727,15 +727,15 @@ Use both. Layer 3 protects you mid-session. Layer 7 is your intentional handoff.
     2026-02-16.md                  # Today's log (auto-generated)
     2026-02-15.md                  # Yesterday's log
   sessions/
-    dorf/
+    my-app/
       {sessionId}.md               # Session state files (auto-managed)
-    clip-editor/
+    api-server/
       {sessionId}.md
   projects/
-    -home-deltran/
+    -home-youruser/
       memory/
         MEMORY.md                  # Global memory (Layer 5)
-    -home-deltran-code-dorf/
+    -home-youruser-code-my-app/
       memory/
         MEMORY.md                  # Project memory (Layer 5)
   skills/
@@ -762,19 +762,19 @@ Use both. Layer 3 protects you mid-session. Layer 7 is your intentional handoff.
 ---
 [today's prompts]
 
-## Active Sessions (dorf)
+## Active Sessions (my-app)
 
 ### This Session (resuming)
 [own state file, if compaction recovery]
 
 ### Recent Peer Sessions
 **Session abc1234** (45 min ago):
-- Implementing gacha pity progress bar
-- Branch: `feat/gacha-juice`
+- Adding pagination to the search results API
+- Branch: `feat/search-pagination`
 
 **Session def5678** (2h ago):
-- Running UI critiques across all screens
-- Branch: `main`
+- Fixing auth token refresh race condition
+- Branch: `fix/token-refresh`
 ```
 
 Plus CLAUDE.md instructions, MEMORY.md knowledge, and project-level configuration — all loaded automatically.
