@@ -8,7 +8,7 @@
 
 Claude Code has no long-term memory. Every session starts blank. Context compaction can erase your working state mid-session. Multiple concurrent sessions on the same repo have zero awareness of each other.
 
-Some third-party tools tackle this with SQLite databases, background worker services, and structured observation capture on every tool call. Those approaches are powerful — but heavy. Everything in this guide uses bash scripts, markdown files, and Claude Code's built-in hook system.
+This guide builds a complete memory system using bash scripts, markdown files, and Claude Code's built-in hook system. No databases, no background processes.
 
 Here's the full architecture, built up layer by layer.
 
@@ -723,8 +723,6 @@ Use both. Layer 3 protects you mid-session. Layer 7 is your intentional handoff.
 ---
 
 ## How It All Fits Together
-
-![Comparison with Heavy Approaches](diagrams/comparison.svg)
 
 ### The Complete File Tree
 
