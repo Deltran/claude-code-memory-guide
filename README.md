@@ -18,6 +18,8 @@ Here's the full architecture, built up layer by layer.
 
 ## Layer 1: Daily Prompt Logging
 
+> **Token cost:** 0 at write time. Loaded in Layer 2.
+
 **What it does:** Automatically logs every prompt you send to Claude, creating a searchable daily journal of everything you worked on.
 
 **Why it matters:** When you start a session tomorrow, Claude can see what you were doing today and yesterday. No manual notes needed.
@@ -128,6 +130,8 @@ These accumulate automatically. No action required after setup.
 
 ## Layer 2: Session History Loading
 
+> **Token cost:** ~2,500 tokens (light usage, ~20 prompts/day) to ~25,000 tokens (heavy usage, 100+ prompts/day). This is the most expensive layer — it loads 2 full days of logs. See [Tuning Token Budget](#tuning-the-token-budget) for ways to cap it.
+
 **What it does:** On every session start, injects the last 2 days of daily logs into Claude's context.
 
 **Why it matters:** Claude immediately knows what you were working on recently without you re-explaining anything.
@@ -213,6 +217,8 @@ Every time Claude starts, it immediately sees your recent work history. No manua
 ---
 
 ## Layer 3: Session State Persistence
+
+> **Token cost:** ~200 tokens (own state) + ~150 tokens (3 peer summaries) = **~350 tokens** on startup. The cheapest layer relative to its value.
 
 **What it does:** Claude periodically writes a small state summary to disk. On compaction, it recovers its own state. On new session start, it sees what other sessions are doing.
 
@@ -443,6 +449,8 @@ Sessions on different projects never see each other's state. Sessions on the sam
 
 ## Layer 4: Global Instructions (CLAUDE.md)
 
+> **Token cost:** ~200–600 tokens depending on how much you put in it. Loaded by Claude Code automatically (not by our hooks).
+
 **What it does:** Persistent instructions that load into every Claude session automatically.
 
 **Why it matters:** Your preferences, workflow rules, and behavioral guidelines survive across all sessions without repetition.
@@ -490,6 +498,8 @@ Use global for personal preferences and workflow rules. Use project-level for re
 ---
 
 ## Layer 5: Persistent Memory (MEMORY.md)
+
+> **Token cost:** ~300–1,000 tokens. Truncated at 200 lines, so it has a natural ceiling. Loaded by Claude Code automatically.
 
 **What it does:** Claude Code's auto-memory system — a file that Claude reads on every session and can update as it learns things about your setup.
 
@@ -544,6 +554,8 @@ Claude will update this file autonomously as it discovers stable patterns. You c
 ---
 
 ## Layer 6: Secret Sanitization
+
+> **Token cost:** 0. This is a preprocessing step — it runs before text is written to logs, not when context is loaded.
 
 **What it does:** Automatically redacts API keys, tokens, and credentials from daily logs before they're written to disk.
 
@@ -629,6 +641,8 @@ INPUT=$(echo "$INPUT" | sed -E \
 ---
 
 ## Layer 7: Manual Session Snapshots (/session-end)
+
+> **Token cost:** 0 at startup. This writes a file on demand — it doesn't inject anything into session context automatically. The next session benefits indirectly if you read the file.
 
 **What it does:** A user-invocable skill that writes a detailed session summary to the project root. Designed for end-of-day or end-of-task handoffs.
 
@@ -778,6 +792,54 @@ Use both. Layer 3 protects you mid-session. Layer 7 is your intentional handoff.
 ```
 
 Plus CLAUDE.md instructions, MEMORY.md knowledge, and project-level configuration — all loaded automatically.
+
+---
+
+## Token Budget Summary
+
+Every token injected at startup is a token Claude can't use for your actual work. Here's what each layer costs:
+
+| Layer | Tokens at Startup | Notes |
+|-------|------------------:|-------|
+| 1. Daily Logging | 0 | Write-only — no startup cost |
+| 2. Session History | 2,500–25,000 | **Biggest cost.** 2 days of logs. See tuning below |
+| 3. Session State | ~350 | Own file (~200) + up to 3 peers (~50 each) |
+| 4. CLAUDE.md | 200–600 | Loaded by Claude Code, not our hooks |
+| 5. MEMORY.md | 300–1,000 | Capped at 200 lines by Claude Code |
+| 6. Secret Sanitization | 0 | Preprocessing, no injection |
+| 7. /session-end | 0 | Write-only, on demand |
+| **Total** | **~3,350–27,000** | **Dominated by Layer 2** |
+
+For light-to-moderate users (~20-50 prompts/day), expect **~5,000–10,000 tokens** at startup. That's roughly 5% of Claude's context window — a good trade-off for full session awareness.
+
+For heavy users (100+ prompts/day), Layer 2 becomes expensive. Use the tuning options below.
+
+### Tuning the Token Budget
+
+**Cap daily log loading** — The simplest optimization. In `load-history.sh`, limit how many lines get loaded:
+
+```bash
+# Instead of loading the full log:
+OUTPUT+="$(cat "$LOG_DIR/$TODAY.md")"
+
+# Load only the last N lines:
+OUTPUT+="$(tail -200 "$LOG_DIR/$TODAY.md")"
+```
+
+200 lines covers the last ~4-6 hours of work at moderate pace. That caps Layer 2 at roughly **~3,000–5,000 tokens** regardless of usage volume.
+
+**Load only today** — If yesterday's context is rarely useful, skip it:
+
+```bash
+# Remove or comment out the yesterday block:
+# if [ -f "$LOG_DIR/$YESTERDAY.md" ]; then
+#   OUTPUT+="$(cat "$LOG_DIR/$YESTERDAY.md")"
+# fi
+```
+
+This cuts the cost roughly in half.
+
+**Reduce peer sessions** — Change `head -3` to `head -1` in `load-session-state.sh` to load only the single most recent peer. Saves ~100 tokens.
 
 ---
 
