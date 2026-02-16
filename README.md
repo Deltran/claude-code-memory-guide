@@ -8,9 +8,9 @@
 
 Claude Code has no long-term memory. Every session starts blank. Context compaction can erase your working state mid-session. Multiple concurrent sessions on the same repo have zero awareness of each other.
 
-This guide builds a complete memory system using bash scripts, markdown files, and Claude Code's built-in hook system. No databases, no background processes.
+This guide builds a complete memory system using bash scripts, markdown files, and Claude Code's built-in hook system.
 
-Here's the full architecture, built up layer by layer.
+Here's the full architecture, built up layer by layer. Expect **~5,000–10,000 tokens** of startup context for moderate usage — roughly 5% of Claude's context window.
 
 ![Full Architecture](diagrams/full-architecture.svg)
 
@@ -42,6 +42,12 @@ mkdir -p ~/.claude/logs
 
 Create `~/.claude/hooks/log-prompt.sh`:
 
+Claude Code hooks receive JSON on stdin. For `UserPromptSubmit`, it looks like:
+
+```json
+{"prompt": "Fix the login bug", "hook_event_name": "UserPromptSubmit"}
+```
+
 ```bash
 #!/bin/bash
 # Hook: UserPromptSubmit
@@ -67,8 +73,8 @@ if [ ! -f "$LOG_FILE" ]; then
   echo "# Daily Log — $DATE" > "$LOG_FILE"
 fi
 
-# Truncate long prompts for readability
-TRUNCATED=$(echo "$PROMPT" | head -c 1000)
+# Truncate long prompts for readability (cut -c is character-safe for UTF-8)
+TRUNCATED=$(echo "$PROMPT" | cut -c1-1000)
 if [ ${#PROMPT} -gt 1000 ]; then
   TRUNCATED="${TRUNCATED}..."
 fi
@@ -130,7 +136,7 @@ These accumulate automatically. No action required after setup.
 
 ## Layer 2: Session History Loading
 
-> **Token cost:** ~2,500 tokens (light usage, ~20 prompts/day) to ~25,000 tokens (heavy usage, 100+ prompts/day). This is the most expensive layer — it loads 2 full days of logs. See [Tuning Token Budget](#tuning-the-token-budget) for ways to cap it.
+> **Token cost:** Variable — depends on how much you type. Light usage (~20 short prompts/day) might be ~2,000 tokens. Heavy usage (100+ prompts, some long) can reach ~15,000+ tokens. This loads 2 full days of logs, so it's the most expensive layer. See [Tuning Token Budget](#tuning-the-token-budget) for ways to cap it.
 
 **What it does:** On every session start, injects the last 2 days of daily logs into Claude's context.
 
@@ -191,24 +197,44 @@ exit 0
 chmod +x ~/.claude/hooks/load-history.sh
 ```
 
-Register in `~/.claude/settings.json` (add to the `hooks` object):
+Register in `~/.claude/settings.json`. Your full hooks section should now look like:
 
 ```json
-"SessionStart": [
-  {
-    "matcher": "",
-    "hooks": [
+{
+  "hooks": {
+    "UserPromptSubmit": [
       {
-        "type": "command",
-        "command": "$HOME/.claude/hooks/load-history.sh",
-        "timeout": 5
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/log-prompt.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/load-history.sh",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
-]
+}
 ```
 
-> **Note:** The hook parses `session_id`, `cwd`, and `source` from stdin. The `source` field tells you how the session started: `"startup"` (new), `"resume"`, `"clear"` (after /clear), or `"compact"` (after auto-compaction). This becomes important in Layer 3.
+> **Note:** The `SessionStart` hook receives JSON on stdin like:
+> ```json
+> {"session_id":"abc-123","cwd":"/home/user/my-app","source":"startup","hook_event_name":"SessionStart"}
+> ```
+> The `source` field has four possible values: `"startup"` (new session), `"resume"`, `"clear"` (after /clear), or `"compact"` (after auto-compaction). Our scripts only distinguish `"compact"` from everything else — on compaction, we load only this session's own state file for recovery. On all other starts, we also load peer sessions for awareness.
 
 ### What You Get
 
@@ -222,7 +248,7 @@ Every time Claude starts, it immediately sees your recent work history. No manua
 
 **What it does:** Claude periodically writes a small state summary to disk. On compaction, it recovers its own state. On new session start, it sees what other sessions are doing.
 
-**Why it matters:** This is the big one. Context compaction no longer means amnesia. Multiple concurrent sessions on the same repo gain awareness of each other.
+**Why it matters:** This is the big one. Daily logs (Layer 2) tell Claude what you *asked about*. Session state tells Claude what it *learned, decided, and is currently doing*. When Claude's context gets compacted mid-session, daily logs can't restore that working knowledge. Session state can. It also means multiple concurrent sessions on the same repo gain awareness of each other.
 
 ![Session Start Flow](diagrams/session-start-flow.svg)
 
@@ -256,6 +282,9 @@ Create `~/.claude/scripts/load-session-state.sh`:
 ```bash
 #!/bin/bash
 # load-session-state.sh — Load session state files on SessionStart.
+# Requires GNU coreutils (stat -c, find -printf, grep -P).
+# On macOS, see the compatibility notes at the end of this guide.
+#
 # Called from load-history.sh with three args:
 #   $1 = SESSION_ID
 #   $2 = CWD (current working directory)
@@ -278,7 +307,9 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
-# Derive project name: basename of CWD, or "home" for $HOME
+# Derive project name: basename of CWD, or "home" for $HOME.
+# Note: Claude Code passes the project root as CWD in hook input,
+# not the subdirectory you might be browsing in a file tree.
 if [ "$CWD" = "$HOME" ]; then
   PROJECT="home"
 else
@@ -291,8 +322,8 @@ OWN_FILE="$SESSION_DIR/$SESSION_ID.md"
 # Create project session dir if it doesn't exist
 mkdir -p "$SESSION_DIR"
 
-# Cleanup: delete files older than 48h
-find "$SESSION_DIR" -name "*.md" -mmin +2880 -delete 2>/dev/null || true
+# Cleanup: delete state files older than 48h
+find "$SESSION_DIR" -type f -name "*.md" -mmin +2880 -delete 2>/dev/null || true
 
 # Collect output
 OUTPUT=""
@@ -326,6 +357,7 @@ if [ "$SOURCE" != "compact" ]; then
 
     while IFS= read -r peer_file; do
       [ -z "$peer_file" ] && continue
+      [ -f "$peer_file" ] || continue  # file may have been deleted since find
       peer_id="$(basename "$peer_file" .md)"
       # Calculate age
       file_age_min=$(( ($(date +%s) - $(stat -c %Y "$peer_file")) / 60 ))
@@ -369,7 +401,11 @@ Periodically write a session state summary to
 `~/.claude/sessions/{project}/{sessionId}.md` where:
 - `{project}` is the basename of the current working directory
   (e.g., `my-app`, `api-server`). If CWD is `$HOME`, use `home`.
-- `{sessionId}` is your current session ID.
+- `{sessionId}` is your current session ID (visible in your
+  system prompt context or retrievable via environment).
+
+To fill in the template: get the current branch with
+`git branch --show-current`, and use the current date/time.
 
 **When to write:**
 - After completing a significant task or milestone
@@ -410,7 +446,9 @@ Periodically write a session state summary to
 Create a test file and run both scenarios:
 
 ```bash
-# Create test data
+# Create test data.
+# The script derives project name from basename of CWD,
+# so cwd="/tmp/test-project" → project="test-project" → looks in sessions/test-project/
 mkdir -p ~/.claude/sessions/test-project
 cat > ~/.claude/sessions/test-project/fake-aaa.md << 'EOF'
 # Session State
@@ -486,7 +524,7 @@ This file is automatically loaded by Claude Code on every session start. No hook
 
 ### Scope Levels
 
-Claude Code loads instructions from multiple levels, merged together:
+Claude Code loads instructions from multiple levels, merged together (all are included — more specific files add to, rather than override, broader ones):
 
 | File | Scope | Loaded When |
 |------|-------|-------------|
@@ -494,13 +532,13 @@ Claude Code loads instructions from multiple levels, merged together:
 | `{project}/.claude/CLAUDE.md` | Project-specific | Sessions in that project |
 | `{project}/CLAUDE.md` | Project root | Sessions in that project |
 
-Use global for personal preferences and workflow rules. Use project-level for repo-specific conventions, tech stack details, and architectural decisions.
+Use global for personal preferences and workflow rules. Use project-level for repo-specific conventions, tech stack details, and architectural decisions. If you put conflicting instructions in multiple files, the behavior is undefined — keep each scope focused on its own concerns.
 
 ---
 
 ## Layer 5: Persistent Memory (MEMORY.md)
 
-> **Token cost:** ~300–1,000 tokens. Truncated at 200 lines, so it has a natural ceiling. Loaded by Claude Code automatically.
+> **Token cost:** ~300–1,000 tokens. Claude Code truncates MEMORY.md at 200 lines (a built-in limit), which provides a natural ceiling. Loaded automatically.
 
 **What it does:** Claude Code's auto-memory system — a file that Claude reads on every session and can update as it learns things about your setup.
 
@@ -522,7 +560,7 @@ For project-specific memory:
 ~/.claude/projects/-home-youruser-code-my-app/memory/MEMORY.md
 ```
 
-> **Note:** The path uses dashes instead of slashes. `~/code/my-app` becomes `-home-youruser-code-my-app`.
+> **Note:** Claude Code maps the absolute project path to a directory name by replacing every `/` with `-`. So `/home/youruser/code/my-app` becomes `-home-youruser-code-my-app`. You don't need to create these directories yourself — Claude Code creates them automatically when it first writes to MEMORY.md.
 
 ### What To Store
 
@@ -716,7 +754,7 @@ Just type `/session-end` in Claude Code when you're wrapping up. Claude will rev
 | **Location** | `~/.claude/sessions/{project}/` | `{project}/.claude/SESSION_STATE.md` |
 | **Scope** | Working state for compaction recovery | Handoff state for next human session |
 | **Detail** | ~100-200 tokens, terse | Richer, more considered |
-| **Lifecycle** | Auto-deleted after 48h | Overwritten on next /session-end |
+| **Lifecycle** | Cleaned up after 48h (on next session start) | Overwritten on next /session-end |
 
 Use both. Layer 3 protects you mid-session. Layer 7 is your intentional handoff.
 
@@ -765,7 +803,7 @@ Use both. Layer 3 protects you mid-session. Layer 7 is your intentional handoff.
 | **Compaction fires** | `load-history.sh` re-injects only this session's state file |
 | **~15-20 tool calls** | Claude writes its own state file (per CLAUDE.md instruction) |
 | **You type /session-end** | Claude writes a detailed handoff snapshot |
-| **Session state > 48h old** | Auto-deleted on next SessionStart |
+| **Session state > 48h old** | Cleaned up on next SessionStart (not a background process — only runs when a session starts) |
 
 ### What Claude Sees On Startup
 
@@ -801,17 +839,17 @@ Every token injected at startup is a token Claude can't use for your actual work
 | Layer | Tokens at Startup | Notes |
 |-------|------------------:|-------|
 | 1. Daily Logging | 0 | Write-only — no startup cost |
-| 2. Session History | 2,500–25,000 | **Biggest cost.** 2 days of logs. See tuning below |
+| 2. Session History | 2,000–15,000+ | **Biggest cost.** 2 days of logs. See tuning below |
 | 3. Session State | ~350 | Own file (~200) + up to 3 peers (~50 each) |
 | 4. CLAUDE.md | 200–600 | Loaded by Claude Code, not our hooks |
 | 5. MEMORY.md | 300–1,000 | Capped at 200 lines by Claude Code |
 | 6. Secret Sanitization | 0 | Preprocessing, no injection |
 | 7. /session-end | 0 | Write-only, on demand |
-| **Total** | **~3,350–27,000** | **Dominated by Layer 2** |
+| **Total** | **~3,000–17,000+** | **Dominated by Layer 2** |
 
-For light-to-moderate users (~20-50 prompts/day), expect **~5,000–10,000 tokens** at startup. That's roughly 5% of Claude's context window — a good trade-off for full session awareness.
+These are rough estimates — actual token counts depend on prompt length and frequency. For most users, expect **~5,000–10,000 tokens** at startup, roughly 5% of Claude's context window.
 
-For heavy users (100+ prompts/day), Layer 2 becomes expensive. Use the tuning options below.
+If startup context feels too heavy, Layer 2 is where to cut. See tuning options below.
 
 ### Tuning the Token Budget
 
@@ -825,7 +863,7 @@ OUTPUT+="$(cat "$LOG_DIR/$TODAY.md")"
 OUTPUT+="$(tail -200 "$LOG_DIR/$TODAY.md")"
 ```
 
-200 lines covers the last ~4-6 hours of work at moderate pace. That caps Layer 2 at roughly **~3,000–5,000 tokens** regardless of usage volume.
+200 lines covers the last ~4-6 hours of work at moderate pace, putting a hard ceiling on Layer 2 regardless of daily volume.
 
 **Load only today** — If yesterday's context is rarely useful, skip it:
 
@@ -865,9 +903,13 @@ stat -c %Y "$file"    # Linux
 # Find: -printf is GNU-only, use -exec on macOS
 find ... -exec stat -f '%m %N' {} \;  # macOS
 find ... -printf '%T@ %p\n'           # Linux
+
+# Grep: -P (Perl regex) is GNU grep only
+grep -oP '(?<=pattern).*'   # Linux (GNU grep)
+grep -oE 'pattern(.*)' ...  # macOS (rewrite without lookbehind)
 ```
 
-Or install GNU coreutils via Homebrew: `brew install coreutils findutils`
+Or install GNU coreutils via Homebrew: `brew install coreutils findutils grep`
 
 ---
 
@@ -883,4 +925,4 @@ Or install GNU coreutils via Homebrew: `brew install coreutils findutils`
 
 ---
 
-*Built with [Claude Code](https://claude.ai/code). Diagrams generated via [Kroki](https://kroki.io/) (free, open-source diagram rendering API).*
+*This guide and its diagrams were created using [Claude Code](https://claude.ai/code) and [Kroki](https://kroki.io/) (free, open-source diagram rendering API).*
