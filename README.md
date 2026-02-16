@@ -468,17 +468,18 @@ When resuming work from a previous session, always check for
 session summary files, recent git log, and TODO/plan files
 before asking the user to re-explain context.
 
-## Working Style
+## Session State Persistence
 
-During brainstorming, freely offer alternative perspectives.
-Once the user has chosen a direction, commit to it and build
-on it — don't push back unless there's a critical blocker.
+Periodically write a session state summary to
+`~/.claude/sessions/{project}/{sessionId}.md` where:
+- `{project}` is the basename of the current working directory.
+  If CWD is `$HOME`, use `home`.
+- `{sessionId}` is your current session ID.
 
-## Verify Assumptions Before Writing Code
-
-Before implementing or testing, explicitly list assumptions
-about how the system behaves — then write tests that validate
-those assumptions first.
+When to write:
+- After completing a significant task or milestone
+- Roughly every 15-20 tool calls during active work
+- When you notice context is getting large
 ```
 
 This file is automatically loaded by Claude Code on every session start. No hook needed — it's a built-in feature.
@@ -848,7 +849,7 @@ This cuts the cost roughly in half.
 - [Claude Code](https://claude.ai/code) installed
 - `jq` installed (`sudo apt install jq` on Ubuntu/Debian)
 - `~/.claude/` directory exists (created automatically by Claude Code)
-- Bash or Zsh shell (tested on WSL2/Ubuntu, should work on macOS with minor adjustments to `date` and `stat` flags)
+- Bash or Zsh shell (tested on Linux, should work on macOS with minor adjustments to `date` and `stat` flags)
 
 ### macOS Compatibility Notes
 
