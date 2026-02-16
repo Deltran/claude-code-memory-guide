@@ -8,7 +8,7 @@
 
 Claude Code has no long-term memory. Every session starts blank. Context compaction can erase your working state mid-session. Multiple concurrent sessions on the same repo have zero awareness of each other.
 
-Tools like [Claude Pilot](https://github.com/maxritter/claude-pilot) solve this with a SQLite database, a background worker, and structured observation capture on every tool call. That's powerful — but heavy. Everything in this guide uses bash scripts, markdown files, and Claude Code's built-in hook system.
+Some third-party tools tackle this with SQLite databases, background worker services, and structured observation capture on every tool call. Those approaches are powerful — but heavy. Everything in this guide uses bash scripts, markdown files, and Claude Code's built-in hook system.
 
 Here's the full architecture, built up layer by layer.
 
