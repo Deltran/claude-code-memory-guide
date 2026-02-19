@@ -897,6 +897,76 @@ This cuts the cost roughly in half.
 
 ---
 
+### Multi-Machine Log Splitting
+
+If you use Claude Code on multiple computers (e.g., a work laptop and a home desktop), you can split logs by hostname so each machine writes to its own subdirectory. On session start, logs from **all** machines are loaded together — giving Claude cross-machine awareness of your recent work.
+
+**What changes:**
+
+| Component | Single-Machine (default) | Multi-Machine |
+|-----------|-------------------------|---------------|
+| Log path | `~/.claude/logs/2026-02-16.md` | `~/.claude/logs/MyLaptop/2026-02-16.md` |
+| Writer | Writes directly to `logs/` | Writes to `logs/$(hostname)/` |
+| Reader | Reads flat files | Loops over subdirectories |
+
+**Step 1: Update `log-prompt.sh`** — Change the log directory to include the hostname:
+
+```bash
+# Replace this:
+LOG_DIR="$HOME/.claude/logs"
+
+# With this:
+HOSTNAME=$(hostname)
+LOG_DIR="$HOME/.claude/logs/$HOSTNAME"
+```
+
+Everything else in the script stays the same — `mkdir -p` handles creating the subdirectory.
+
+**Step 2: Update `load-history.sh`** — Replace the flat file reads with a loop over machine directories:
+
+```bash
+# Replace the daily logs block with:
+LOG_BASE="$HOME/.claude/logs"
+
+if [ -d "$LOG_BASE" ]; then
+  TODAY=$(date +%Y-%m-%d)
+  YESTERDAY=$(date -d "yesterday" +%Y-%m-%d)
+
+  for MACHINE_DIR in "$LOG_BASE"/*/; do
+    [ -d "$MACHINE_DIR" ] || continue
+    MACHINE=$(basename "$MACHINE_DIR")
+
+    if [ -f "$MACHINE_DIR/$YESTERDAY.md" ]; then
+      OUTPUT+="### [$MACHINE] $YESTERDAY"
+      OUTPUT+=$'\n'
+      OUTPUT+="$(tail -c 10240 "$MACHINE_DIR/$YESTERDAY.md")"
+      OUTPUT+=$'\n\n'
+    fi
+
+    if [ -f "$MACHINE_DIR/$TODAY.md" ]; then
+      OUTPUT+="### [$MACHINE] $TODAY"
+      OUTPUT+=$'\n'
+      OUTPUT+="$(tail -c 10240 "$MACHINE_DIR/$TODAY.md")"
+      OUTPUT+=$'\n\n'
+    fi
+  done
+fi
+```
+
+Each machine's logs appear under a `### [MachineName] Date` header, making it clear which computer the work happened on.
+
+**Step 3: Sync logs between machines.** The log directories need to exist on each machine for cross-machine awareness. Options:
+
+- **Git** — Commit `~/.claude/logs/` to a private repo and pull on each machine
+- **Syncthing** — Real-time peer-to-peer sync of the `logs/` directory (no cloud required)
+- **rsync/cron** — Periodic one-way or two-way sync via SSH
+
+Only the `logs/` directory needs syncing — each machine still writes to its own subdirectory, so there are no merge conflicts.
+
+> **Token cost note:** With N machines, you're loading up to N × 2 log files instead of 2. If token budget is a concern, lower the per-file byte cap (e.g., `tail -c 5120` instead of `tail -c 10240`) or load only today's logs.
+
+---
+
 ## Prerequisites
 
 - [Claude Code](https://claude.ai/code) installed
