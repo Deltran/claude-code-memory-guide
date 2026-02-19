@@ -30,6 +30,8 @@ Here's the full architecture, built up layer by layer. Expect **~5,000–10,000 
 
 A `UserPromptSubmit` hook fires on every prompt. It extracts the text, sanitizes secrets, and appends it to a daily markdown file with a timestamp.
 
+Claude Code generates internal system messages (task notifications, background job completions, system reminders) that fire the `UserPromptSubmit` hook. Without filtering, these can bloat the daily log to megabytes on heavy usage days — especially when using subagents and parallel tasks. The script below filters out these non-human messages before they reach the log.
+
 ### Setup
 
 **Step 1: Create the log directory**
@@ -58,6 +60,18 @@ PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)
 
 # Skip empty prompts and slash commands
 if [ -z "$PROMPT" ] || [[ "$PROMPT" == /* ]]; then
+  exit 0
+fi
+
+# Skip system-generated messages (task notifications, XML tags)
+if [[ "$PROMPT" == *"<task-notification>"* ]] || \
+   [[ "$PROMPT" == *"<task-id>"* ]] || \
+   [[ "$PROMPT" == *"<system-reminder>"* ]] || \
+   [[ "$PROMPT" == *"<tool-use-id>"* ]] || \
+   [[ "$PROMPT" == *"<output-file>"* ]] || \
+   [[ "$PROMPT" == *"<status>"* ]] || \
+   [[ "$PROMPT" == *"<summary>"* ]] || \
+   [[ "$PROMPT" == *"Read the output file to retrieve"* ]]; then
   exit 0
 fi
 
@@ -136,7 +150,7 @@ These accumulate automatically. No action required after setup.
 
 ## Layer 2: Session History Loading
 
-> **Token cost:** Variable — depends on how much you type. Light usage (~20 short prompts/day) might be ~2,000 tokens. Heavy usage (100+ prompts, some long) can reach ~15,000+ tokens. This loads 2 full days of logs, so it's the most expensive layer. See [Tuning Token Budget](#tuning-the-token-budget) for ways to cap it.
+> **Token cost:** Variable — depends on how much you type. Light usage (~20 short prompts/day) might be ~2,000 tokens. Heavy usage (100+ prompts, some long) can reach ~10,000 tokens. Each daily log file is capped at 20KB (~5,000 tokens) by default, providing a hard ceiling even on heavy days. This loads 2 full days of logs, so it's the most expensive layer. See [Tuning Token Budget](#tuning-the-token-budget) for ways to adjust the cap.
 
 **What it does:** On every session start, injects the last 2 days of daily logs into Claude's context.
 
@@ -168,12 +182,14 @@ if [ -d "$LOG_DIR" ]; then
   YESTERDAY=$(date -d "yesterday" +%Y-%m-%d)
 
   if [ -f "$LOG_DIR/$YESTERDAY.md" ]; then
-    OUTPUT+="$(cat "$LOG_DIR/$YESTERDAY.md")"
+    # Cap each file at 20KB — tail keeps the most recent entries
+    OUTPUT+="$(tail -c 20480 "$LOG_DIR/$YESTERDAY.md")"
     OUTPUT+=$'\n\n---\n\n'
   fi
 
   if [ -f "$LOG_DIR/$TODAY.md" ]; then
-    OUTPUT+="$(cat "$LOG_DIR/$TODAY.md")"
+    # Cap each file at 20KB — tail keeps the most recent entries
+    OUTPUT+="$(tail -c 20480 "$LOG_DIR/$TODAY.md")"
   fi
 fi
 
@@ -839,13 +855,13 @@ Every token injected at startup is a token Claude can't use for your actual work
 | Layer | Tokens at Startup | Notes |
 |-------|------------------:|-------|
 | 1. Daily Logging | 0 | Write-only — no startup cost |
-| 2. Session History | 2,000–15,000+ | **Biggest cost.** 2 days of logs. See tuning below |
+| 2. Session History | 2,000–10,000 | **Biggest cost.** 2 days of logs, each capped at 20KB. See tuning below |
 | 3. Session State | ~350 | Own file (~200) + up to 3 peers (~50 each) |
 | 4. CLAUDE.md | 200–600 | Loaded by Claude Code, not our hooks |
 | 5. MEMORY.md | 300–1,000 | Capped at 200 lines by Claude Code |
 | 6. Secret Sanitization | 0 | Preprocessing, no injection |
 | 7. /session-end | 0 | Write-only, on demand |
-| **Total** | **~3,000–17,000+** | **Dominated by Layer 2** |
+| **Total** | **~3,000–12,000** | **Dominated by Layer 2** |
 
 These are rough estimates — actual token counts depend on prompt length and frequency. For most users, expect **~5,000–10,000 tokens** at startup, roughly 5% of Claude's context window.
 
@@ -853,17 +869,18 @@ If startup context feels too heavy, Layer 2 is where to cut. See tuning options 
 
 ### Tuning the Token Budget
 
-**Cap daily log loading** — The simplest optimization. In `load-history.sh`, limit how many lines get loaded:
+**Adjust the byte cap** — By default, `load-history.sh` uses `tail -c 20480` to cap each daily log file at 20KB (~5,000 tokens). This keeps the most recent entries and provides a hard ceiling even on heavy usage days. You can adjust this up or down:
 
 ```bash
-# Instead of loading the full log:
-OUTPUT+="$(cat "$LOG_DIR/$TODAY.md")"
+# Default: 20KB per file (~5,000 tokens each, ~10,000 max for 2 days)
+OUTPUT+="$(tail -c 20480 "$LOG_DIR/$TODAY.md")"
 
-# Load only the last N lines:
+# Tighter cap: 10KB per file (~2,500 tokens each)
+OUTPUT+="$(tail -c 10240 "$LOG_DIR/$TODAY.md")"
+
+# Alternative: line-based cap (last ~200 lines, ~4-6 hours of work)
 OUTPUT+="$(tail -200 "$LOG_DIR/$TODAY.md")"
 ```
-
-200 lines covers the last ~4-6 hours of work at moderate pace, putting a hard ceiling on Layer 2 regardless of daily volume.
 
 **Load only today** — If yesterday's context is rarely useful, skip it:
 
